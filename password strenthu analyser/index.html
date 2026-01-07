@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Password Strength Analyzer</title>
+  <style>
+    :root{
+      --bg:#0f1724; --card:#0b1220; --muted:#9aa4b2; --accent:#06b6d4;
+      --good:#16a34a; --warn:#f59e0b; --bad:#ef4444;
+    }
+    body{
+      font-family: Inter, system-ui, Arial; background: linear-gradient(180deg,#071029 0%, #071827 100%);
+      min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; color:#e6eef6;
+    }
+    .card{
+      background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      border-radius:12px; padding:20px; width:720px; box-shadow: 0 10px 30px rgba(2,6,23,0.7);
+    }
+    h1{ margin:0 0 8px 0; font-size:20px; }
+    p.muted{ color:var(--muted); margin:0 0 16px 0; font-size:13px;}
+    .row{ display:flex; gap:16px; align-items:center; }
+    .col{ flex:1; }
+    input[type="password"]{
+      width:100%; padding:12px 14px; border-radius:8px; border:1px solid rgba(255,255,255,0.06);
+      background:transparent; color:inherit; font-size:15px; outline:none;
+    }
+    .meter {
+      height: 12px; width:100%; border-radius:8px; background: rgba(255,255,255,0.05);
+      overflow:hidden; margin-top:10px;
+    }
+    .meter > i {
+      display:block; height:100%; width:0%; transition: width .25s ease, background-color .25s ease;
+    }
+    .score { font-weight:700; margin-left:10px; min-width:120px; text-align:right; font-size:14px;}
+    .suggestions{ margin-top:14px; display:flex; gap:12px; flex-wrap:wrap; }
+    .chip { background:rgba(255,255,255,0.03); padding:8px 10px; border-radius:999px; font-size:13px; color:var(--muted); }
+    ul.issues { margin:12px 0 0 0; padding-left:18px; color:#fff; }
+    li.issue { margin:6px 0; font-size:14px; color:#f0f6fb; }
+    .small{ font-size:12px; color:var(--muted); margin-top:8px; }
+    .meta { display:flex; gap:12px; flex-wrap:wrap; margin-top:10px; align-items:center; }
+    .badge { padding:6px 8px; border-radius:8px; background:rgba(255,255,255,0.03); color:var(--muted); font-size:13px;}
+    footer{ text-align:right; font-size:12px; color:var(--muted); margin-top:14px;}
+    .controls{ display:flex; gap:10px; align-items:center; margin-top:12px; }
+    button{ background:transparent; border:1px solid rgba(255,255,255,0.06); padding:8px 10px; border-radius:8px; color:inherit; cursor:pointer;}
+    code.kv{ background:rgba(255,255,255,0.02); padding:4px 6px; border-radius:6px; font-size:13px; }
+  </style>
+</head>
+<body>
+  <div class="card" role="region" aria-label="Password strength analyzer">
+    <h1>Password Strength Analyzer</h1>
+    <p class="muted">Type a password and get an instant strength score, entropy estimate, and actionable feedback.</p>
+
+    <div class="row">
+      <div class="col">
+        <label for="pw">Password</label>
+        <input id="pw" type="password" placeholder="Enter password to analyze" autocomplete="new-password" />
+        <div class="meter" aria-hidden="true"><i id="meterFill"></i></div>
+      </div>
+      <div style="width:150px;text-align:right">
+        <div style="display:flex;flex-direction:column;align-items:flex-end">
+          <div class="score" id="strengthLabel">—</div>
+          <div class="small">Entropy: <span id="entropy">—</span> bits</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="toggleShow">Show</button>
+      <button id="suggestBtn">Generate strong sample</button>
+      <div class="badge" id="timeEstimate">Calc: instant</div>
+    </div>
+
+    <div class="meta">
+      <div class="chip">Length: <span class="kv" id="len">0</span></div>
+      <div class="chip">Lower: <span class="kv" id="lc">0</span></div>
+      <div class="chip">Upper: <span class="kv" id="uc">0</span></div>
+      <div class="chip">Digits: <span class="kv" id="dg">0</span></div>
+      <div class="chip">Symbols: <span class="kv" id="sym">0</span></div>
+    </div>
+
+    <div class="suggestions" id="suggestionsArea"></div>
+
+    <ul class="issues" id="issuesList"></ul>
+
+    <footer>Tip: use a long passphrase (≥16 chars) with mixed categories for best protection.</footer>
+  </div>
+
+  <script>
+    const pwEl = document.getElementById('pw');
+    const meterFill = document.getElementById('meterFill');
+    const strengthLabel = document.getElementById('strengthLabel');
+    const entropyEl = document.getElementById('entropy');
+    const lenEl = document.getElementById('len');
+    const lcEl = document.getElementById('lc');
+    const ucEl = document.getElementById('uc');
+    const dgEl = document.getElementById('dg');
+    const symEl = document.getElementById('sym');
+    const suggestionsArea = document.getElementById('suggestionsArea');
+    const issuesList = document.getElementById('issuesList');
+    const toggleShowBtn = document.getElementById('toggleShow');
+    const suggestBtn = document.getElementById('suggestBtn');
+    const weakWords = ["password","123456","qwerty","letmein","admin","welcome","iloveyou","sunshine","princess","football"];
+
+    function analyze(password){
+      const res = {
+        length: password.length,
+        lower: (password.match(/[a-z]/g) || []).length,
+        upper: (password.match(/[A-Z]/g) || []).length,
+        digits: (password.match(/[0-9]/g) || []).length,
+        symbols: (password.match(/[^A-Za-z0-9]/g) || []).length,
+        hasCommon: false,
+        issues: [],
+        suggestions: []
+      };
+      const lower = password.toLowerCase();
+      for(const w of weakWords){
+        if(w.length >= 4 && lower.includes(w)){
+          res.hasCommon = true;
+          res.issues.push(`Contains common word or pattern: "${w}"`);
+        }
+      }
+      if(res.length === 0){
+        res.issues.push("No password entered.");
+      } else {
+        if(res.length < 8) res.issues.push("Too short — use at least 8 characters (16+ recommended).");
+        if(res.lower === 0) res.issues.push("No lowercase letters detected.");
+        if(res.upper === 0) res.issues.push("No uppercase letters detected.");
+        if(res.digits === 0) res.issues.push("No digits detected.");
+        if(res.symbols === 0) res.issues.push("No symbol characters detected (like !@#$).");
+      }
+      if(hasLongRepeat(password, 3)) res.issues.push("Contains repeated sequences (e.g., 'aaa', '111').");
+      if(hasSequence(password, 4)) res.issues.push("Contains sequential characters (e.g., 'abcd', '1234').");
+      let pool = 0;
+      if(res.lower > 0) pool += 26;
+      if(res.upper > 0) pool += 26;
+      if(res.digits > 0) pool += 10;
+      if(res.symbols > 0) pool += 32;
+      if(pool === 0) pool = 26;
+      const entropy = +(password.length * Math.log2(pool) || 0).toFixed(1);
+      let score = Math.min(100, Math.round(entropy * 3)); 
+      if(res.length < 8) score -= 30;
+      if(res.hasCommon) score -= 25;
+      if(hasLongRepeat(password,3)) score -= 12;
+      if(hasSequence(password,4)) score -= 10;
+      if(score < 0) score = 0;
+      let label = "Very weak"; let color = "var(--bad)";
+      if(score >= 80){ label = "Excellent"; color = "var(--good)";}
+      else if(score >= 60){ label = "Strong"; color = "var(--good)";}
+      else if(score >= 40){ label = "Moderate"; color = "var(--warn)";}
+      else if(score >= 20){ label = "Weak"; color = "var(--bad)";}
+      if(res.length < 16) res.suggestions.push("Use a longer passphrase (ideally 16+ characters).");
+      if(res.lower === 0) res.suggestions.push("Add lowercase letters.");
+      if(res.upper === 0) res.suggestions.push("Add uppercase letters.");
+      if(res.digits === 0) res.suggestions.push("Include digits.");
+      if(res.symbols === 0) res.suggestions.push("Include symbols or punctuation.");
+      if(res.hasCommon) res.suggestions.push("Avoid common words, names, or keyboard patterns.");
+      if(!res.issues.length && score < 80) res.suggestions.push("Consider using a random passphrase with 4+ words or a secure password manager.");
+
+      return { ...res, entropy, score, label, color };
+    }
+
+    function hasLongRepeat(s, n){
+      return /(.)\1{2,}/.test(s);
+    }
+
+    function hasSequence(s, length){
+      if(!s || s.length < length) return false;
+      const seqs = [];
+      const alphabet = "abcdefghijklmnopqrstuvwxyz";
+      const digits = "0123456789";
+      const combined = alphabet + alphabet.toUpperCase() + digits;
+      for(let i=0; i <= combined.length - length; i++){
+        seqs.push(combined.slice(i, i+length));
+      }
+    
+      const qwerty = ["qwertyuiop","asdfghjkl","zxcvbnm","1234567890"];
+      for(const sseq of seqs){
+        if(s.toLowerCase().includes(sseq.toLowerCase())) return true;
+      }
+      for(const k of qwerty){
+        for(let i=0;i<=k.length-length;i++){
+          if(s.toLowerCase().includes(k.slice(i,i+length))) return true;
+        }
+      }
+      return false;
+    }
+    function render(password){
+      const out = analyze(password);
+      meterFill.style.width = out.score + "%";
+      meterFill.style.backgroundColor = out.color;
+      strengthLabel.textContent = `${out.label} (${out.score})`;
+      entropyEl.textContent = out.entropy.toFixed(1);
+      lenEl.textContent = out.length;
+      lcEl.textContent = out.lower;
+      ucEl.textContent = out.upper;
+      dgEl.textContent = out.digits;
+      symEl.textContent = out.symbols;
+
+      suggestionsArea.innerHTML = "";
+      out.suggestions.slice(0,6).forEach(s=>{
+        const d = document.createElement('div'); d.className='chip'; d.textContent = s;
+        suggestionsArea.appendChild(d);
+      });
+
+      issuesList.innerHTML = "";
+      if(out.issues.length === 0 && out.score >= 80){
+        const li = document.createElement('li'); li.className='issue'; li.textContent = "No obvious weaknesses detected.";
+        issuesList.appendChild(li);
+      } else {
+        if(out.issues.length === 0 && out.score < 80){
+          const li = document.createElement('li'); li.className='issue'; li.textContent = "Consider making the password longer and more random.";
+          issuesList.appendChild(li);
+        } else {
+          out.issues.forEach(it=>{
+            const li = document.createElement('li'); li.className='issue'; li.textContent = it;
+            issuesList.appendChild(li);
+          });
+        }
+      }
+    }
+
+    function generateStrongSample(){
+      const words = ["orbit","silver","cedar","matrix","harbor","planet","bright","echo","pylon","atlas","solar","velvet","quartz","lumen","cinder"];
+      const pick = (arr)=>arr[Math.floor(Math.random()*arr.length)];
+      const pass = [pick(words), pick(words), pick(words), pick(words)].join("-");
+      const extras = Math.random() < 0.5 ? "!$" : "@#";
+      const digits = String(Math.floor(100 + Math.random()*899));
+      return pass + extras + digits;
+    }
+    pwEl.addEventListener('input', e => render(e.target.value));
+    toggleShowBtn.addEventListener('click', ()=>{
+      if(pwEl.type === 'password') { pwEl.type = 'text'; toggleShowBtn.textContent = 'Hide'; }
+      else { pwEl.type = 'password'; toggleShowBtn.textContent = 'Show'; }
+    });
+    suggestBtn.addEventListener('click', ()=>{
+      const sample = generateStrongSample();
+      pwEl.value = sample;
+      render(sample);
+      suggestBtn.textContent = 'Generated ✓';
+      setTimeout(()=> suggestBtn.textContent = 'Generate strong sample', 1500);
+    });
+    render('');
+  </script>
+</body>
+</html>
